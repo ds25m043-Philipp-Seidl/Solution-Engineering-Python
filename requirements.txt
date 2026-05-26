@@ -1,0 +1,10 @@
+jupyter
+ipykernel
+pandas
+numpy
+gdown
+matplotlib
+seaborn
+plotly
+fg-data-profiling
+streamlit>=1.57
