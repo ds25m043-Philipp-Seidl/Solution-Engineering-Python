@@ -1,16 +1,13 @@
-FROM node:20-alpine
+# services/backend/Dockerfile
+FROM python:3.10-slim
 WORKDIR /app
 
-# Copy package files and install dependencies
-COPY package*.json ./
-# use npm ci for strictly reproducible builds in Docker
-RUN npm ci
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the actual backend source code
 COPY . .
 
-# Expose the port your API runs on (e.g., 3000)
 EXPOSE 3000
 
-# Start the Node server
-CMD ["npm", "start"]
+# Start the Backend API on port 3000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "3000"]
