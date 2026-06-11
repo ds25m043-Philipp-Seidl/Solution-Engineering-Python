@@ -15,8 +15,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DB_HOST=database
-      - DB_PORT=5432
+      - MONGO_URL=mongodb://database:27017
       - ML_URL=http://mlengine:8000
     depends_on:
       - database
@@ -30,22 +29,40 @@ services:
       - "8000:8000"
     networks:
       - app-network
-    # Optional: Map a local folder if you want to swap out trained models without rebuilding the container
-    # volumes:
-    #   - ./services/mlengine/models:/app/models
+    volumes:
+      - ./services/mlengine/models:/app/models
 
   database:
     build: ./services/database
     ports:
-      - "5432:5432"
+      - "27017:27017"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - mongodata:/data/db
     networks:
       - app-network
+    # NEW: Tell Docker how to check if Mongo is actually ready to receive data
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+    # NEW: The automated seeder container
+  db-seed:
+    build: ./services/seed
+    # Map your local CSV folder into the container so pandas can read them
+    volumes:
+      - ./data:/app/data
+    networks:
+      - app-network
+    # Wait for the healthcheck to pass before booting
+    depends_on:
+      database:
+        condition: service_healthy
 
 networks:
   app-network:
     driver: bridge
 
 volumes:
-  pgdata: # This ensures your database doesn't get wiped if the container restarts
+  mongodata:

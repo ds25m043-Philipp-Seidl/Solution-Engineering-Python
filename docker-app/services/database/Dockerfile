@@ -1,12 +1,8 @@
-FROM postgres:15-alpine
+# services/database/Dockerfile
+FROM mongo:6.0
 
-# Set default environment variables (Override these in your compose file!)
-ENV POSTGRES_USER=myuser
-ENV POSTGRES_PASSWORD=mypassword
-ENV POSTGRES_DB=moviesdb
+# Copy the initialization script
+# Mongo executes scripts in this folder in alphabetical order on first boot
+COPY init-mongo.js /docker-entrypoint-initdb.d/
 
-# Copy your initial database schema or movie catalog seed script
-# This file will automatically execute when the container starts for the first time
-COPY init.sql /docker-entrypoint-initdb.d/
-
-EXPOSE 5432
+EXPOSE 27017
