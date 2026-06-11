@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  frontend:
+    build: ./services/frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  backend:
+    build: ./services/backend
+    ports:
+      - "3000:3000"
+    environment:
+      - DB_HOST=database
+      - DB_PORT=5432
+      - ML_URL=http://mlengine:8000
+    depends_on:
+      - database
+      - mlengine
+    networks:
+      - app-network
+
+  mlengine:
+    build: ./services/mlengine
+    ports:
+      - "8000:8000"
+    networks:
+      - app-network
+    # Optional: Map a local folder if you want to swap out trained models without rebuilding the container
+    # volumes:
+    #   - ./services/mlengine/models:/app/models
+
+  database:
+    build: ./services/database
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  pgdata: # This ensures your database doesn't get wiped if the container restarts
