@@ -91,3 +91,75 @@ def get_recommendations(prefs: UserPreferences):
         import traceback
         traceback.print_exc()
         return {"recommended_ids": []}
+
+
+@app.post("/recommend_deep")
+def get_recommendations_with_mlp(prefs: UserPreferences):
+    try:
+        # 1. Get raw indices as before
+        valid_idxs = [meta["movie_to_idx"][mid] for mid in prefs.selected_movie_ids if mid in meta["movie_to_idx"]]
+        idx_tensor = torch.tensor(valid_idxs, dtype=torch.long).to(DEVICE)
+
+        # 2. Build the Synthetic User (Separated for GMF and MLP)
+        with torch.no_grad():
+            # Average the GMF embeddings
+            user_gmf = torch.mean(model.u_gmf(idx_tensor), dim=0, keepdim=True)
+            # Average the MLP embeddings
+            user_mlp = torch.mean(model.u_mlp(idx_tensor), dim=0, keepdim=True)
+
+            # 3. Prepare batches for the entire catalog
+            all_movie_idxs = torch.arange(meta["N_MOVIES"]).to(DEVICE)
+
+            # Expand the synthetic user to match the size of the whole catalog
+            # If you have 10,000 movies, this duplicates the user 10,000 times
+            user_gmf_batch = user_gmf.expand(meta["N_MOVIES"], -1)
+            user_mlp_batch = user_mlp.expand(meta["N_MOVIES"], -1)
+
+            # Get all movie embeddings
+            item_gmf_batch = model.m_gmf(all_movie_idxs)
+            item_mlp_batch = model.m_mlp(all_movie_idxs)
+
+            # (Assuming you have a tensor of all movie genres loaded into memory)
+            # all_genres = meta["all_genres_tensor"].to(DEVICE)
+
+            # 4. The GMF Path
+            gmf_vector = user_gmf_batch * item_gmf_batch
+
+            # 5. The MLP Path (FIXED: Adding the required 19 genre dimensions)
+
+            # Assuming you saved a tensor of all movie genres (shape: [51231, 19]) in your pickle file
+            # If it's a numpy array or list, convert it to a tensor first:
+            # all_genres = torch.tensor(meta["all_genres"], dtype=torch.float32).to(DEVICE)
+            all_genres = meta["all_genres_tensor"].to(DEVICE)
+
+            # Now concatenate all THREE required pieces: User (32) + Item (32) + Genres (19) = 83
+            mlp_input = torch.cat([user_mlp_batch, item_mlp_batch, all_genres], dim=1)
+
+            # This will now pass successfully through the 83x128 Linear layer!
+            mlp_vector = model.mlp(mlp_input)
+
+            # 6. Final Output Layer
+            prediction_vector = torch.cat([gmf_vector, mlp_vector], dim=1)
+            scores = model.output_layer(prediction_vector).squeeze()
+
+            # 7. Get Top K matches
+            top_k = 20
+            top_scores, top_indices = torch.topk(scores, top_k)
+
+            # Convert back to raw database IDs, filtering out the ones they already selected
+            recommended_ids = []
+            selected_set = set(prefs.selected_movie_ids)
+
+            for idx in top_indices.tolist():
+                raw_id = meta["idx_to_movie"][idx]
+                if raw_id not in selected_set:
+                    # CAST TO INT HERE
+                    recommended_ids.append(int(raw_id))
+                    if len(recommended_ids) == 10:
+                        break
+
+            return {"recommended_ids": recommended_ids}
+    except:
+        import traceback
+        traceback.print_exc()
+        return {"recommended_ids": []}

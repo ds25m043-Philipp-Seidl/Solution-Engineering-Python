@@ -25,6 +25,18 @@ MONGO_URL = os.getenv("MONGO_URL", "mongodb://database:27017")
 ML_ENGINE_URL = os.getenv("ML_URL", "http://mlengine:8000")
 db_client = None
 
+import math
+
+def clean_nans(obj):
+    """Recursively search for and replace float NaNs with None."""
+    if isinstance(obj, dict):
+        return {k: clean_nans(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [clean_nans(v) for v in obj]
+    elif isinstance(obj, float) and math.isnan(obj):
+        return None
+    return obj
+
 @app.on_event("startup")
 async def startup_db_client():
     global db_client
@@ -86,45 +98,52 @@ async def start_game(setup: GameSetupRequest):
 
 @app.post("/api/get-movies")
 async def get_movies_pipeline(request: SelectionRequest):
-    print(f"Received 10 anchors from frontend: {request.movie_ids}")
+    try:
+        print(f"Received 10 anchors from frontend: {request.movie_ids}")
 
-    # 1. Forward the 10 chosen IDs to the ML Engine
-    async with httpx.AsyncClient() as client:
-        try:
-            ml_response = await client.post(
-                f"{ML_ENGINE_URL}/recommend",
-                json={"selected_movie_ids": request.movie_ids},
-                timeout=10.0
-            )
-            ml_response.raise_for_status()
-        except Exception as e:
-            print(f"ML Engine Error: {e}")
-            raise HTTPException(status_code=500, detail="ML Engine unreachable")
+        # 1. Forward the 10 chosen IDs to the ML Engine
+        async with httpx.AsyncClient() as client:
+            try:
+                ml_response = await client.post(
+                    f"{ML_ENGINE_URL}/recommend",
+                    json={"selected_movie_ids": request.movie_ids},
+                    timeout=10.0
+                )
+                ml_response.raise_for_status()
+            except Exception as e:
+                print(f"ML Engine Error: {e}")
+                raise HTTPException(status_code=500, detail="ML Engine unreachable")
 
-    # 2. Extract the calculated recommendations returned by the ML Engine
-    recommended_ids = ml_response.json().get("recommended_ids", [])
+        # 2. Extract the calculated recommendations returned by the ML Engine
+        recommended_ids = ml_response.json().get("recommended_ids", [])
 
-    # 3. Query MongoDB to get the full titles, years, and genres for these new IDs
-    db = db_client.moviesdb
-    cursor = db.catalog.find(
-        {"movieId": {"$in": recommended_ids}},
-        {"_id": 0}
-    )
-    unordered_movies = await cursor.to_list(length=10)
+        # 3. Query MongoDB to get the full titles, years, and genres for these new IDs
+        db = db_client.moviesdb
+        cursor = db.catalog.find(
+            {"movieId": {"$in": recommended_ids}},
+            {"_id": 0}
+        )
+        unordered_movies = await cursor.to_list(length=10)
 
-    # Map the movies by their ID for quick lookup
-    movie_dict = {m.get("movieId"): m for m in unordered_movies}
+        # Map the movies by their ID for quick lookup
+        movie_dict = {m.get("movieId"): m for m in unordered_movies}
 
-    # Rebuild the list in the exact order the ML Engine recommended
-    final_movies = [movie_dict[mid] for mid in recommended_ids if mid in movie_dict]
+        # Rebuild the list in the exact order the ML Engine recommended
+        final_movies = [movie_dict[mid] for mid in recommended_ids if mid in movie_dict]
 
-    # ENRICH WITH TMDB
-    final_movies = await asyncio.gather(*[enrich_movie_with_tmdb(db, m) for m in final_movies])
+        # ENRICH WITH TMDB
+        # ENRICH WITH TMDB
+        final_movies = await asyncio.gather(*[enrich_movie_with_tmdb(db, m) for m in final_movies])
 
-    return {
-        "success": True,
-        "recommendations": final_movies
-    }
+        # Scrub the MongoDB data for NaNs right before returning!
+        return {
+            "success": True,
+            "recommendations": clean_nans(final_movies)
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+
 @app.get("/api/search")
 async def search_movies(q: str = "", limit: int = 20): # Changed limit to 20 to avoid TMDB rate limits
     db = db_client.moviesdb
