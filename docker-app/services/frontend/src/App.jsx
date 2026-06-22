@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import ColdStartGame from './components/ColdStartGame';
 import Dashboard from './components/Dashboard';
+import MovieSearchGame from './components/MovieSearchGame'; // IMPORT THE NEW COMPONENT
 import './App.css';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('game'); // 'game' or 'dashboard'
+  // We'll default to the new Search Game!
+  const [activeTab, setActiveTab] = useState('search');
 
   return (
     <div className="cinematic-container">
@@ -19,22 +21,29 @@ export default function App() {
           <h2 className="logo">🎬 NeuralRec</h2>
           <div className="nav-links">
             <button
+              className={`nav-btn ${activeTab === 'search' ? 'active' : ''}`}
+              onClick={() => setActiveTab('search')}
+            >
+              Search & Rate
+            </button>
+            <button
               className={`nav-btn ${activeTab === 'game' ? 'active' : ''}`}
               onClick={() => setActiveTab('game')}
             >
-              Cold Start Game
+              Roulette Game
             </button>
             <button
               className={`nav-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
               onClick={() => setActiveTab('dashboard')}
             >
-              EDA Dashboard
+              Latent Explorer
             </button>
           </div>
         </nav>
 
         {/* View Router */}
         <main className="view-container fade-in">
+          {activeTab === 'search' && <MovieSearchGame />}
           {activeTab === 'game' && <ColdStartGame />}
           {activeTab === 'dashboard' && <Dashboard />}
         </main>
