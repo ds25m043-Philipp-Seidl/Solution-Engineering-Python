@@ -161,7 +161,7 @@ async def search_movies(q: str = "", limit: int = 20): # Changed limit to 20 to 
 import os
 import httpx
 
-TMDB_API_KEY = os.getenv("TMDB_API_KEY", "a929ccbf554492c8e45b68a2ef509d2d")
+TMDB_API_KEY = os.getenv("TMDB_API_KEY", "5fd8ba242aa72bbff9e33b84b60b3f26")
 
 async def enrich_movie_with_tmdb(db, movie):
     """Fetches the tmdbId from the database, then fetches the poster and plot from TMDB."""
