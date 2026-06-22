@@ -1,165 +1,144 @@
 import pickle
+import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
 
-# 1. Redefine the exact architecture from the notebook
+# ==========================================
+# 1. ARCHITECTURES
+# ==========================================
 class NeuralCF(nn.Module):
-    def __init__(self, n_users, n_movies, n_factors_gmf=32, n_factors_mlp=32, mlp_hidden=(128, 64, 32), n_genres=19):
+    def __init__(self, n_users, n_movies, n_genres=19, n_factors=64, dropout_rate=0.05):
         super().__init__()
-        self.u_gmf = nn.Embedding(n_users, n_factors_gmf)
-        self.m_gmf = nn.Embedding(n_movies, n_factors_gmf)
-        self.u_mlp = nn.Embedding(n_users, n_factors_mlp)
-        self.m_mlp = nn.Embedding(n_movies, n_factors_mlp)
-        self.genre_proj_gmf = nn.Linear(n_genres, n_factors_gmf, bias=False)
-        dims = [2 * n_factors_mlp + n_genres, *mlp_hidden]
+        self.u_gmf = nn.Embedding(n_users, n_factors)
+        self.m_gmf = nn.Embedding(n_movies, n_factors)
+        self.u_mlp = nn.Embedding(n_users, n_factors)
+        self.m_mlp = nn.Embedding(n_movies, n_factors)
+        self.genre_proj = nn.Linear(n_genres, n_factors, bias=False)
+        dims = [2 * n_factors + n_genres, 256, 128, 64, 32]
         self.mlp = nn.Sequential(*[
             layer for in_d, out_d in zip(dims, dims[1:])
-            for layer in (nn.Linear(in_d, out_d), nn.ReLU())
+            for layer in (nn.Linear(in_d, out_d), nn.ReLU(), nn.Dropout(dropout_rate))
         ])
-        self.output_layer = nn.Linear(n_factors_gmf + mlp_hidden[-1], 1)
+        self.output_layer = nn.Linear(n_factors + dims[-1], 1)
+
+class MatrixFactorization(nn.Module):
+    def __init__(self, n_users, n_movies, n_factors=128):
+        super().__init__()
+        self.u_emb = nn.Embedding(n_users, n_factors)
+        self.m_emb = nn.Embedding(n_movies, n_factors)
+        self.u_bias = nn.Embedding(n_users, 1)
+        self.m_bias = nn.Embedding(n_movies, 1)
+        self.global_bias = nn.Parameter(torch.zeros(1))
+
+    def forward(self, u, m):
+        dot = (self.u_emb(u) * self.m_emb(m)).sum(dim=1)
+        return dot + self.u_bias(u).squeeze() + self.m_bias(m).squeeze() + self.global_bias
 
 app = FastAPI()
+DEVICE = torch.device("cpu")
 
-# 2. Load Artifacts on Startup
-print("Loading NCF Model and Metadata...")
+# ==========================================
+# 2. LOAD ARTIFACTS ON STARTUP
+# ==========================================
+print("Loading Metadata...")
 with open("ncf_metadata.pkl", "rb") as f:
     meta = pickle.load(f)
 
-DEVICE = torch.device("cpu")
-model = NeuralCF(meta["N_USERS"], meta["N_MOVIES"], n_genres=meta["N_GENRES"]).to(DEVICE)
-model.load_state_dict(torch.load("ncf_weights.pth", map_location=DEVICE))
-model.eval()
+print("Loading SVD Matrix...")
+raw_svd_matrix = np.load("svd_item_matrix.npy")
+norms = np.linalg.norm(raw_svd_matrix, axis=0)
+norms[norms == 0] = 1e-9
+svd_matrix = raw_svd_matrix / norms
 
-# Pre-compute a combined embedding for all movies (GMF path + MLP path)
-# This gives us a rich, latent representation of every movie in the catalog
-with torch.no_grad():
-    all_movie_idxs = torch.arange(meta["N_MOVIES"]).to(DEVICE)
-    # Concatenate the two learned representations for a fuller picture
-    all_embeddings = torch.cat([model.m_gmf(all_movie_idxs), model.m_mlp(all_movie_idxs)], dim=1)
-    # Normalize for cosine similarity
-    all_embeddings_norm = F.normalize(all_embeddings, p=2, dim=1)
+print("Loading NCF Model...")
+model_ncf = NeuralCF(meta["N_USERS"], meta["N_MOVIES"], n_genres=meta["N_GENRES"]).to(DEVICE)
+model_ncf.load_state_dict(torch.load("ncf_weights.pth", map_location=DEVICE, weights_only=True))
+model_ncf.eval()
+all_genres_tensor = meta["all_genres_tensor"].to(DEVICE)
+
+print("Loading Funk SVD (RMSE) Model...")
+model_funk = MatrixFactorization(meta["N_USERS"], meta["N_MOVIES"]).to(DEVICE)
+model_funk.load_state_dict(torch.load("funk_svd_weights.pth", map_location=DEVICE, weights_only=True))
+model_funk.eval()
 
 class UserPreferences(BaseModel):
     selected_movie_ids: List[int]
 
+# ==========================================
+# 3. THE 3-WAY SHOWDOWN ENDPOINT
+# ==========================================
 @app.post("/recommend")
-def get_recommendations(prefs: UserPreferences):
-    print(f"Received anchor movies: {prefs.selected_movie_ids}")
+def get_showdown_recommendations(prefs: UserPreferences):
     try:
-        # Map raw database IDs to the model's internal matrix indices
-        valid_idxs = []
-        for mid in prefs.selected_movie_ids:
-            if mid in meta["movie_to_idx"]:
-                valid_idxs.append(meta["movie_to_idx"][mid])
-
-        if not valid_idxs:
-            raise HTTPException(status_code=400, detail="None of the selected movies exist in the model's vocabulary.")
-
-        # Convert to tensor and fetch embeddings for the selected movies
-        idx_tensor = torch.tensor(valid_idxs, dtype=torch.long).to(DEVICE)
-        selected_embs = all_embeddings_norm[idx_tensor]
-
-        # Create an "average user profile" from their selections
-        user_profile = torch.mean(selected_embs, dim=0, keepdim=True)
-        user_profile = F.normalize(user_profile, p=2, dim=1)
-
-        # Calculate Cosine Similarity against the entire catalog
-        similarities = torch.mm(user_profile, all_embeddings_norm.T).squeeze(0)
-
-        # Get the top 20 matches
-        top_k = 20
-        top_scores, top_indices = torch.topk(similarities, top_k)
-
-        # Convert back to raw database IDs, filtering out the ones they already selected
-        recommended_ids = []
-        selected_set = set(prefs.selected_movie_ids)
-
-        for idx in top_indices.tolist():
-            raw_id = meta["idx_to_movie"][idx]
-            if raw_id not in selected_set:
-                # CAST TO INT HERE
-                recommended_ids.append(int(raw_id))
-                if len(recommended_ids) == 10:
-                    break
-
-        return {"recommended_ids": recommended_ids}
-    except:
-        import traceback
-        traceback.print_exc()
-        return {"recommended_ids": []}
-
-
-@app.post("/recommend_deep")
-def get_recommendations_with_mlp(prefs: UserPreferences):
-    try:
-        # 1. Get raw indices as before
         valid_idxs = [meta["movie_to_idx"][mid] for mid in prefs.selected_movie_ids if mid in meta["movie_to_idx"]]
-        idx_tensor = torch.tensor(valid_idxs, dtype=torch.long).to(DEVICE)
+        if not valid_idxs:
+            raise HTTPException(status_code=400, detail="No valid movies.")
 
-        # 2. Build the Synthetic User (Separated for GMF and MLP)
+        idx_tensor = torch.tensor(valid_idxs, dtype=torch.long, device=DEVICE)
+
+        # -----------------------------------
+        # 1. PURE SVD (Cosine Similarity)
+        # -----------------------------------
+        svd_user_vec = np.mean(svd_matrix[:, valid_idxs], axis=1)
+        svd_scores = np.dot(svd_user_vec, svd_matrix)
+        svd_scores[valid_idxs] = -np.inf
+        top_10_svd_idx = np.argsort(svd_scores)[::-1][:10]
+        svd_ids = [int(meta["idx_to_movie"][idx]) for idx in top_10_svd_idx]
+
+        # -----------------------------------
+        # 2. NeuralCF (Two-Stage Pipeline)
+        # -----------------------------------
+        top_200_svd_idx = np.argsort(svd_scores)[::-1][:200]
+        candidate_tensor = torch.tensor(top_200_svd_idx.copy(), dtype=torch.long, device=DEVICE)
+
         with torch.no_grad():
-            # Average the GMF embeddings
-            user_gmf = torch.mean(model.u_gmf(idx_tensor), dim=0, keepdim=True)
-            # Average the MLP embeddings
-            user_mlp = torch.mean(model.u_mlp(idx_tensor), dim=0, keepdim=True)
+            synth_u_gmf = torch.mean(model_ncf.m_gmf(idx_tensor), dim=0, keepdim=True)
+            synth_u_mlp = torch.mean(model_ncf.m_mlp(idx_tensor), dim=0, keepdim=True)
 
-            # 3. Prepare batches for the entire catalog
-            all_movie_idxs = torch.arange(meta["N_MOVIES"]).to(DEVICE)
+            u_gmf_expanded = synth_u_gmf.expand(200, -1)
+            u_mlp_expanded = synth_u_mlp.expand(200, -1)
 
-            # Expand the synthetic user to match the size of the whole catalog
-            # If you have 10,000 movies, this duplicates the user 10,000 times
-            user_gmf_batch = user_gmf.expand(meta["N_MOVIES"], -1)
-            user_mlp_batch = user_mlp.expand(meta["N_MOVIES"], -1)
+            m_gmf_batch = model_ncf.m_gmf(candidate_tensor)
+            m_mlp_batch = model_ncf.m_mlp(candidate_tensor)
+            g_batch = all_genres_tensor[candidate_tensor]
 
-            # Get all movie embeddings
-            item_gmf_batch = model.m_gmf(all_movie_idxs)
-            item_mlp_batch = model.m_mlp(all_movie_idxs)
+            gmf_out = u_gmf_expanded * (m_gmf_batch + model_ncf.genre_proj(g_batch))
+            mlp_in = torch.cat([u_mlp_expanded, m_mlp_batch, g_batch], dim=1)
+            mlp_out = model_ncf.mlp(mlp_in)
 
-            # (Assuming you have a tensor of all movie genres loaded into memory)
-            # all_genres = meta["all_genres_tensor"].to(DEVICE)
+            ncf_scores = model_ncf.output_layer(torch.cat([gmf_out, mlp_out], dim=1)).squeeze(1)
+            top_10_local_idx = torch.argsort(ncf_scores, descending=True)[:10]
+            ncf_ids = [int(meta["idx_to_movie"][idx]) for idx in candidate_tensor[top_10_local_idx].tolist()]
 
-            # 4. The GMF Path
-            gmf_vector = user_gmf_batch * item_gmf_batch
+        # -----------------------------------
+        # 3. Funk SVD (RMSE Optimized)
+        # -----------------------------------
+        with torch.no_grad():
+            # Create synthetic user by averaging item embeddings
+            synth_u_emb = torch.mean(model_funk.m_emb(idx_tensor), dim=0, keepdim=True)
 
-            # 5. The MLP Path (FIXED: Adding the required 19 genre dimensions)
+            all_m = torch.arange(meta["N_MOVIES"], device=DEVICE)
+            m_emb = model_funk.m_emb(all_m)
+            m_bias = model_funk.m_bias(all_m).squeeze()
 
-            # Assuming you saved a tensor of all movie genres (shape: [51231, 19]) in your pickle file
-            # If it's a numpy array or list, convert it to a tensor first:
-            # all_genres = torch.tensor(meta["all_genres"], dtype=torch.float32).to(DEVICE)
-            all_genres = meta["all_genres_tensor"].to(DEVICE)
+            # Predict stars for every single movie in the catalog!
+            funk_scores = (synth_u_emb.expand(meta["N_MOVIES"], -1) * m_emb).sum(dim=1) + m_bias + model_funk.global_bias
+            funk_scores_np = funk_scores.cpu().numpy()
+            funk_scores_np[valid_idxs] = -np.inf
 
-            # Now concatenate all THREE required pieces: User (32) + Item (32) + Genres (19) = 83
-            mlp_input = torch.cat([user_mlp_batch, item_mlp_batch, all_genres], dim=1)
+            top_10_funk_idx = np.argsort(funk_scores_np)[::-1][:10]
+            funk_ids = [int(meta["idx_to_movie"][idx]) for idx in top_10_funk_idx]
 
-            # This will now pass successfully through the 83x128 Linear layer!
-            mlp_vector = model.mlp(mlp_input)
+        return {
+            "svd_recommended_ids": svd_ids,
+            "ncf_recommended_ids": ncf_ids,
+            "funk_svd_recommended_ids": funk_ids
+        }
 
-            # 6. Final Output Layer
-            prediction_vector = torch.cat([gmf_vector, mlp_vector], dim=1)
-            scores = model.output_layer(prediction_vector).squeeze()
-
-            # 7. Get Top K matches
-            top_k = 20
-            top_scores, top_indices = torch.topk(scores, top_k)
-
-            # Convert back to raw database IDs, filtering out the ones they already selected
-            recommended_ids = []
-            selected_set = set(prefs.selected_movie_ids)
-
-            for idx in top_indices.tolist():
-                raw_id = meta["idx_to_movie"][idx]
-                if raw_id not in selected_set:
-                    # CAST TO INT HERE
-                    recommended_ids.append(int(raw_id))
-                    if len(recommended_ids) == 10:
-                        break
-
-            return {"recommended_ids": recommended_ids}
-    except:
+    except Exception as e:
         import traceback
         traceback.print_exc()
-        return {"recommended_ids": []}
+        raise HTTPException(status_code=500, detail=str(e))

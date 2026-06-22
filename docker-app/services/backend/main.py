@@ -99,50 +99,53 @@ async def start_game(setup: GameSetupRequest):
 @app.post("/api/get-movies")
 async def get_movies_pipeline(request: SelectionRequest):
     try:
-        print(f"Received 10 anchors from frontend: {request.movie_ids}")
-
-        # 1. Forward the 10 chosen IDs to the ML Engine
+        # 1. Ask ML Engine for the 3 SHOWDOWN lists
         async with httpx.AsyncClient() as client:
             try:
                 ml_response = await client.post(
                     f"{ML_ENGINE_URL}/recommend",
                     json={"selected_movie_ids": request.movie_ids},
-                    timeout=10.0
+                    timeout=20.0
                 )
                 ml_response.raise_for_status()
             except Exception as e:
                 print(f"ML Engine Error: {e}")
                 raise HTTPException(status_code=500, detail="ML Engine unreachable")
 
-        # 2. Extract the calculated recommendations returned by the ML Engine
-        recommended_ids = ml_response.json().get("recommended_ids", [])
+        ml_data = ml_response.json()
+        svd_ids = ml_data.get("svd_recommended_ids", [])
+        ncf_ids = ml_data.get("ncf_recommended_ids", [])
+        funk_ids = ml_data.get("funk_svd_recommended_ids", []) # NEW!
 
-        # 3. Query MongoDB to get the full titles, years, and genres for these new IDs
+        # Combine IDs to query MongoDB/TMDB once
+        all_needed_ids = list(set(svd_ids + ncf_ids + funk_ids))
+
+        # 2. Query MongoDB
         db = db_client.moviesdb
-        cursor = db.catalog.find(
-            {"movieId": {"$in": recommended_ids}},
-            {"_id": 0}
-        )
-        unordered_movies = await cursor.to_list(length=10)
+        cursor = db.catalog.find({"movieId": {"$in": all_needed_ids}}, {"_id": 0})
+        unordered_movies = await cursor.to_list(length=30)
 
-        # Map the movies by their ID for quick lookup
-        movie_dict = {m.get("movieId"): m for m in unordered_movies}
+        # 3. Enrich ALL unique movies with TMDB
+        enriched_unique = await asyncio.gather(*[enrich_movie_with_tmdb(db, m) for m in unordered_movies])
 
-        # Rebuild the list in the exact order the ML Engine recommended
-        final_movies = [movie_dict[mid] for mid in recommended_ids if mid in movie_dict]
+        # Map by ID
+        enriched_dict = {m.get("movieId"): m for m in enriched_unique}
 
-        # ENRICH WITH TMDB
-        # ENRICH WITH TMDB
-        final_movies = await asyncio.gather(*[enrich_movie_with_tmdb(db, m) for m in final_movies])
+        # 4. Rebuild the ordered lists
+        final_svd = [enriched_dict[mid] for mid in svd_ids if mid in enriched_dict]
+        final_ncf = [enriched_dict[mid] for mid in ncf_ids if mid in enriched_dict]
+        final_funk = [enriched_dict[mid] for mid in funk_ids if mid in enriched_dict] # NEW!
 
-        # Scrub the MongoDB data for NaNs right before returning!
         return {
             "success": True,
-            "recommendations": clean_nans(final_movies)
+            "svd_recommendations": clean_nans(final_svd),
+            "ncf_recommendations": clean_nans(final_ncf),
+            "funk_svd_recommendations": clean_nans(final_funk) # NEW!
         }
     except Exception as e:
         import traceback
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/search")
 async def search_movies(q: str = "", limit: int = 20): # Changed limit to 20 to avoid TMDB rate limits
