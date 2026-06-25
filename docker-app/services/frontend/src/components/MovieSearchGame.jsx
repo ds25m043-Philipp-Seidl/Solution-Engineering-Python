@@ -213,7 +213,7 @@ export default function MovieSearchGame() {
       {/* BOTTOM SECTION: The 3-Way Split-Screen Showdown */}
       {svdRecommendations.length > 0 && (
         <div className="glass-panel zoom-in text-center" style={{ width: '100%' }}>
-          <h2 className="glowing-text">The Ultimate Showdown</h2>
+          <h2 className="glowing-text">Your Recommendations</h2>
           <p>Based on your {selectedBasket.length} highly-rated movies.</p>
 
           <div style={{ display: 'flex', gap: '20px', marginTop: '30px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -221,8 +221,8 @@ export default function MovieSearchGame() {
             {/* COLUMN 1: SVD */}
             <div style={{ flex: '1 1 30%', minWidth: '300px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <h3 className="gradient-text" style={{ fontSize: '1.4rem', borderBottom: '1px solid #444', paddingBottom: '10px' }}>
-                    SVD Baseline<br/>
-                    <span style={{ fontSize: '0.8rem', color: '#888', fontWeight: 'normal' }}>(Linear Blockbusters)</span>
+                    The Calculator<br/>
+                    <span style={{ fontSize: '0.8rem', color: '#888', fontWeight: 'normal' }}>(Singular Value Decomposition)</span>
                 </h3>
                 {svdRecommendations.map(renderMovieCard)}
             </div>
@@ -230,19 +230,10 @@ export default function MovieSearchGame() {
             {/* COLUMN 2: NCF */}
             <div style={{ flex: '1 1 30%', minWidth: '300px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
                 <h3 className="gradient-text" style={{ fontSize: '1.4rem', borderBottom: '1px solid #444', paddingBottom: '10px' }}>
-                    NeuralCF<br/>
-                    <span style={{ fontSize: '0.8rem', color: '#888', fontWeight: 'normal' }}>(Deep Learning Profile)</span>
+                    The Network<br/>
+                    <span style={{ fontSize: '0.8rem', color: '#888', fontWeight: 'normal' }}>(Neural Collaborative Filtering)</span>
                 </h3>
                 {ncfRecommendations.map(renderMovieCard)}
-            </div>
-
-            {/* COLUMN 3: FUNK SVD (RMSE) */}
-            <div style={{ flex: '1 1 30%', minWidth: '300px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                <h3 className="gradient-text" style={{ fontSize: '1.4rem', borderBottom: '1px solid #444', paddingBottom: '10px' }}>
-                    Funk SVD<br/>
-                    <span style={{ fontSize: '0.8rem', color: '#888', fontWeight: 'normal' }}>(RMSE / Star Ratings)</span>
-                </h3>
-                {funkRecommendations.map(renderMovieCard)}
             </div>
 
           </div>
@@ -254,7 +245,7 @@ export default function MovieSearchGame() {
             setSelectedBasket([]);
             setViewingPlotId(null);
           }}>
-            Build a New Profile
+            Restart Recommender
           </button>
         </div>
       )}
