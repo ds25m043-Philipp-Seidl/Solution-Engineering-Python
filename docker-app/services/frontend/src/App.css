@@ -20,8 +20,9 @@ body {
 
 .content-wrapper {
   z-index: 10;
-  width: 100%;
-  max-width: 800px;
+  width: 95%;          /* Let it breathe on the sides */
+  max-width: 1800px;   /* Give it a much wider maximum limit */
+  margin: 0 auto;      /* Keep it centered */
 }
 
 /* --- ANIMATED BACKGROUND ORBS --- */
