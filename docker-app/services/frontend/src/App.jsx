@@ -32,12 +32,6 @@ export default function App() {
             >
               Roulette Game
             </button>
-            <button
-              className={`nav-btn ${activeTab === 'dashboard' ? 'active' : ''}`}
-              onClick={() => setActiveTab('dashboard')}
-            >
-              Latent Explorer
-            </button>
           </div>
         </nav>
 
